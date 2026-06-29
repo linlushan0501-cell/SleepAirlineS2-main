@@ -256,7 +256,7 @@ body::before {
   line-height: 1.6;
 }
 .scenery-link {
-  display: inline-block;
+  display: none;
   margin-top: 8px;
   font-size: 11px;
   color: var(--sky);
