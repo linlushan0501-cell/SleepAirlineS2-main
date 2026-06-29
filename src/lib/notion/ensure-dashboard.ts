@@ -1,15 +1,11 @@
 import type { Client } from '@notionhq/client';
-import { DASHBOARD_TITLE, DEFAULT_PARENT_PAGE_ID, getDashboardProperties, normalizeNotionId } from './dashboard-schema';
+import { DASHBOARD_TITLE, getDashboardProperties } from './dashboard-schema';
 import { getNotionClient } from './client';
 import { resolveDbIdWithFallback } from './db-access';
+import { isUsingCustomNotionParentPage, resolveNotionParentPageId } from './parent-page';
 
 let cachedDbId: string | null = null;
 let resolving: Promise<string> | null = null;
-
-function getParentPageId(): string {
-  const raw = process.env.NOTION_PARENT_PAGE_ID ?? DEFAULT_PARENT_PAGE_ID;
-  return normalizeNotionId(raw);
-}
 
 async function readDatabaseTitle(client: Client, databaseId: string): Promise<string> {
   const db = await client.databases.retrieve({ database_id: databaseId });
@@ -50,7 +46,7 @@ async function createDashboard(client: Client, parentPageId: string): Promise<st
 }
 
 function isOwnWorkspace(): boolean {
-  return getParentPageId() !== normalizeNotionId(DEFAULT_PARENT_PAGE_ID);
+  return isUsingCustomNotionParentPage();
 }
 
 function canWriteSchema(): boolean {
@@ -59,7 +55,7 @@ function canWriteSchema(): boolean {
 
 async function findOrCreateDashboard(): Promise<string> {
   const client = getNotionClient();
-  const parentPageId = getParentPageId();
+  const parentPageId = resolveNotionParentPageId();
 
   try {
     return await resolveDbIdWithFallback({

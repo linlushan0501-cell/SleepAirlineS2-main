@@ -168,7 +168,6 @@ function getDashboardProperties() {
     "Updated At": { date: {} }
   };
 }
-var DEFAULT_PARENT_PAGE_ID = "388a7f1b413c8015824ff6fb8bc1d65b";
 function normalizeNotionId(id) {
   return id.replace(/-/g, "");
 }
@@ -215,13 +214,22 @@ function formatNotionError(err) {
   return msg;
 }
 
+// src/lib/notion/parent-page.ts
+var DEFAULT_PARENT_PAGE_ID = "388a7f1b413c8015824ff6fb8bc1d65b";
+function normalizeNotionId2(id) {
+  return id.replace(/-/g, "");
+}
+function resolveNotionParentPageId() {
+  const raw = process.env.MYSELF_NOTION_PARENT_PAGE_ID ?? process.env.NOTION_PARENT_PAGE_ID ?? DEFAULT_PARENT_PAGE_ID;
+  return normalizeNotionId2(raw);
+}
+function isUsingCustomNotionParentPage() {
+  return resolveNotionParentPageId() !== normalizeNotionId2(DEFAULT_PARENT_PAGE_ID);
+}
+
 // src/lib/notion/ensure-dashboard.ts
 var cachedDbId = null;
 var resolving = null;
-function getParentPageId() {
-  const raw = process.env.NOTION_PARENT_PAGE_ID ?? DEFAULT_PARENT_PAGE_ID;
-  return normalizeNotionId(raw);
-}
 async function readDatabaseTitle2(client, databaseId) {
   const db = await client.databases.retrieve({ database_id: databaseId });
   const title = db.title;
@@ -254,14 +262,14 @@ async function createDashboard(client, parentPageId) {
   return db.id;
 }
 function isOwnWorkspace() {
-  return getParentPageId() !== normalizeNotionId(DEFAULT_PARENT_PAGE_ID);
+  return isUsingCustomNotionParentPage();
 }
 function canWriteSchema() {
   return process.env.NOTION_ALLOW_SCHEMA_WRITE === "true" || isOwnWorkspace();
 }
 async function findOrCreateDashboard() {
   const client = getNotionClient();
-  const parentPageId = getParentPageId();
+  const parentPageId = resolveNotionParentPageId();
   try {
     return await resolveDbIdWithFallback({
       client,
@@ -603,12 +611,8 @@ function getLandscapeProperties() {
 // src/lib/notion/ensure-landscape-db.ts
 var cachedDbId2 = null;
 var resolving2 = null;
-function getParentPageId2() {
-  const raw = process.env.NOTION_PARENT_PAGE_ID ?? DEFAULT_PARENT_PAGE_ID;
-  return normalizeNotionId(raw);
-}
 function isOwnWorkspace2() {
-  return getParentPageId2() !== normalizeNotionId(DEFAULT_PARENT_PAGE_ID);
+  return isUsingCustomNotionParentPage();
 }
 function canWriteSchema2() {
   return process.env.NOTION_ALLOW_SCHEMA_WRITE === "true" || isOwnWorkspace2();
@@ -646,7 +650,7 @@ async function createLandscapeDb(client, parentPageId) {
 }
 async function findOrCreateLandscapeDb() {
   const client = getNotionClient();
-  const parentPageId = getParentPageId2();
+  const parentPageId = resolveNotionParentPageId();
   try {
     return await resolveDbIdWithFallback({
       client,
@@ -107715,19 +107719,75 @@ async function generateBroadcastSpeech(text, style) {
 
 // src/lib/ai/scenery.ts
 var import_openai4 = __toESM(require("openai"));
-function buildSceneryPrompt(city, country, displayName) {
+
+// src/lib/ai/scenery-prompt.ts
+var SCENERY_PROMPT_VARIANTS = [
+  {
+    key: "night-window",
+    scene: "View through an airplane cabin window on a quiet night flight",
+    mood: "deep midnight navy sky, soft starlight, and gentle moonlit mist",
+    details: "rolling hills, coastline, or valley silhouettes"
+  },
+  {
+    key: "sunrise-clouds",
+    scene: "Early dawn view from an airplane window above layered clouds",
+    mood: "warm golden sunrise, pale blue horizon, and soft sleepy haze",
+    details: "cloud oceans opening toward the terrain below"
+  },
+  {
+    key: "city-lights",
+    scene: "High altitude airplane window view of a city at night",
+    mood: "glowing amber street grids, quiet neighborhoods, and distant runway lights",
+    details: "urban lights shaped by local geography, not a famous landmark"
+  },
+  {
+    key: "coastal-approach",
+    scene: "Airplane descent view toward a coastline near the destination",
+    mood: "silver water, soft clouds, and a calm cinematic approach",
+    details: "shorelines, harbors, small islands, or sea mist"
+  },
+  {
+    key: "mountain-valley",
+    scene: "Airplane window view over mountains and valleys near landing",
+    mood: "blue shadows, thin clouds, and a peaceful half-awake atmosphere",
+    details: "ridges, rivers, valleys, and layered terrain"
+  },
+  {
+    key: "rainy-window",
+    scene: "Rain-speckled airplane cabin window looking out during descent",
+    mood: "soft reflections, blurred landscape lights, and a quiet rainy arrival",
+    details: "diffused city edges, wet glass, and moody local terrain"
+  },
+  {
+    key: "rural-patchwork",
+    scene: "Gentle airplane window view over countryside near the destination",
+    mood: "muted morning light, soft atmospheric perspective, and calm fields",
+    details: "farmland patterns, rivers, villages, or wooded hills"
+  }
+];
+function pickSceneryVariantIndex(seed, count = SCENERY_PROMPT_VARIANTS.length) {
+  if (count <= 0) return 0;
+  let hash = 0;
+  for (let i = 0; i < seed.length; i += 1) {
+    hash = hash * 31 + seed.charCodeAt(i) >>> 0;
+  }
+  return hash % count;
+}
+function buildSceneryPrompt(city, country, displayName, variantIndex = Math.floor(Math.random() * SCENERY_PROMPT_VARIANTS.length)) {
   const place = displayName || `${city}, ${country}`;
+  const variant = SCENERY_PROMPT_VARIANTS[(variantIndex % SCENERY_PROMPT_VARIANTS.length + SCENERY_PROMPT_VARIANTS.length) % SCENERY_PROMPT_VARIANTS.length];
   return [
-    `View through an airplane cabin window on a quiet night flight,`,
+    `${variant.scene},`,
     `gazing at the landscape near ${place}.`,
-    `Dreamy and poetic mood: deep midnight navy sky, soft starlight,`,
-    `gentle moonlit mist over terrain typical of ${country} \u2014`,
-    `rolling hills, coastline, or valley silhouettes, not a tourist postcard or famous monument.`,
-    `Cinematic, half-awake memory feel; subtle amber reflection on the window glass,`,
-    `cool blue-teal atmosphere like a long night journey before dawn.`,
-    `Soft atmospheric perspective, no people, no text, no watermark, no logos.`
+    `Mood: ${variant.mood}.`,
+    `Show scenery typical of ${country}: ${variant.details}.`,
+    `Dreamy and poetic, like a half-awake memory after a long Sleep Airline flight.`,
+    `Avoid tourist postcard composition and avoid famous monuments unless they naturally appear far in the distance.`,
+    `Cinematic composition, no people, no text, no watermark, no logos.`
   ].join(" ");
 }
+
+// src/lib/ai/scenery.ts
 var SCENERY_IMAGE_SIZE = "1536x1024";
 function safeFilename(city, flightId) {
   const slug2 = city.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 24) || "landing";
@@ -107738,7 +107798,8 @@ function isGptImageModel(model) {
 }
 async function generateLandingScenery(city, country, displayName, flightId) {
   if (!process.env.OPENAI_API_KEY) return null;
-  const imagePrompt = buildSceneryPrompt(city, country, displayName);
+  const variantIndex = pickSceneryVariantIndex(`${flightId}:${displayName}:${Date.now()}`);
+  const imagePrompt = buildSceneryPrompt(city, country, displayName, variantIndex);
   const client = new import_openai4.default({ apiKey: process.env.OPENAI_API_KEY });
   const model = process.env.OPENAI_IMAGE_MODEL ?? "gpt-image-1-mini";
   const response = await client.images.generate(
