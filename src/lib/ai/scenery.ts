@@ -1,24 +1,11 @@
 import OpenAI from 'openai';
+import { buildSceneryPrompt, pickSceneryVariantIndex } from './scenery-prompt';
 
 export interface SceneryGenerationResult {
   imageBuffer: Buffer;
   imagePrompt: string;
   contentType: string;
   filename: string;
-}
-
-export function buildSceneryPrompt(city: string, country: string, displayName: string): string {
-  const place = displayName || `${city}, ${country}`;
-  return [
-    `View through an airplane cabin window on a quiet night flight,`,
-    `gazing at the landscape near ${place}.`,
-    `Dreamy and poetic mood: deep midnight navy sky, soft starlight,`,
-    `gentle moonlit mist over terrain typical of ${country} —`,
-    `rolling hills, coastline, or valley silhouettes, not a tourist postcard or famous monument.`,
-    `Cinematic, half-awake memory feel; subtle amber reflection on the window glass,`,
-    `cool blue-teal atmosphere like a long night journey before dawn.`,
-    `Soft atmospheric perspective, no people, no text, no watermark, no logos.`,
-  ].join(' ');
 }
 
 /** Landscape aspect ratio suits the night-window composition. */
@@ -41,7 +28,8 @@ export async function generateLandingScenery(
 ): Promise<SceneryGenerationResult | null> {
   if (!process.env.OPENAI_API_KEY) return null;
 
-  const imagePrompt = buildSceneryPrompt(city, country, displayName);
+  const variantIndex = pickSceneryVariantIndex(`${flightId}:${displayName}:${Date.now()}`);
+  const imagePrompt = buildSceneryPrompt(city, country, displayName, variantIndex);
   const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
   const model = process.env.OPENAI_IMAGE_MODEL ?? 'gpt-image-1-mini';
 
