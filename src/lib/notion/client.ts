@@ -1,19 +1,23 @@
 import { Client } from '@notionhq/client';
 import { getDataMode, isLiveDataMode } from '../data-mode';
+import { resolveNotionApiKey } from './env';
 
 let _client: Client | null = null;
+let _clientApiKey: string | null = null;
 
-/** live 模式且有 NOTION_API_KEY 時才走 Notion；preview 一律用記憶體。 */
+/** live 模式且有 Notion API key 時才走 Notion；preview 一律用記憶體。 */
 export function isNotionConfigured(): boolean {
-  return isLiveDataMode() && !!process.env.NOTION_API_KEY;
+  return isLiveDataMode() && !!resolveNotionApiKey();
 }
 
 export function getNotionClient(): Client {
-  if (!process.env.NOTION_API_KEY) {
-    throw new Error('NOTION_API_KEY 尚未設定。請在 Vercel 環境變數中加入 Notion API Key。');
+  const apiKey = resolveNotionApiKey();
+  if (!apiKey) {
+    throw new Error('Notion API Key 尚未設定。請在 Vercel 環境變數中加入 MYSELF_NOTION_API_KEY 或 NOTION_API_KEY。');
   }
-  if (!_client) {
-    _client = new Client({ auth: process.env.NOTION_API_KEY });
+  if (!_client || _clientApiKey !== apiKey) {
+    _client = new Client({ auth: apiKey });
+    _clientApiKey = apiKey;
   }
   return _client;
 }

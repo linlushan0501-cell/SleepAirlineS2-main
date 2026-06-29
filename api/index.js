@@ -217,7 +217,22 @@ function formatNotionError(err) {
 // src/lib/notion/parent-page.ts
 var DEFAULT_PARENT_PAGE_ID = "388a7f1b413c8015824ff6fb8bc1d65b";
 function normalizeNotionId2(id) {
-  return id.replace(/-/g, "");
+  const trimmed = id.trim();
+  const uuidPattern = /[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/g;
+  const uuid = trimmed.match(uuidPattern)?.at(-1);
+  if (uuid) return uuid.replace(/-/g, "").toLowerCase();
+  const beforeQuery = trimmed.split(/[?#]/)[0] ?? trimmed;
+  const segments = beforeQuery.split("/").filter(Boolean).reverse();
+  for (const segment of segments) {
+    const decoded = decodeURIComponent(segment);
+    const direct = decoded.match(/^[0-9a-fA-F]{32}$/)?.[0];
+    if (direct) return direct.toLowerCase();
+    const afterLastDash = decoded.split("-").at(-1) ?? "";
+    if (/^[0-9a-fA-F]{32}$/.test(afterLastDash)) {
+      return afterLastDash.toLowerCase();
+    }
+  }
+  return trimmed.replace(/-/g, "");
 }
 function resolveNotionParentPageId() {
   const raw = process.env.MYSELF_NOTION_PARENT_PAGE_ID ?? process.env.NOTION_PARENT_PAGE_ID ?? DEFAULT_PARENT_PAGE_ID;
@@ -302,19 +317,27 @@ async function resolveDashboardDbId() {
   return resolving;
 }
 
+// src/lib/notion/env.ts
+function resolveNotionApiKey() {
+  return process.env.MYSELF_NOTION_API_KEY ?? process.env.NOTION_API_KEY ?? null;
+}
+function hasNotionApiKey() {
+  return !!resolveNotionApiKey();
+}
+
 // src/lib/data-mode.ts
 function getDataMode() {
   const raw = process.env.SLEEP_AIRLINE_DATA_MODE?.trim().toLowerCase();
   if (raw === "preview") return "preview";
   if (raw === "live") return "live";
-  return process.env.NOTION_API_KEY ? "live" : "preview";
+  return hasNotionApiKey() ? "live" : "preview";
 }
 function isLiveDataMode() {
   return getDataMode() === "live";
 }
 async function getDataModeStatus() {
   const dataMode = getDataMode();
-  const hasKey = !!process.env.NOTION_API_KEY;
+  const hasKey = hasNotionApiKey();
   const notionConfigured = dataMode === "live" && hasKey;
   if (dataMode === "preview") {
     return {
@@ -329,7 +352,7 @@ async function getDataModeStatus() {
       dataMode,
       notionConfigured: false,
       notionReady: false,
-      hint: "live \u6A21\u5F0F\u4F46\u672A\u8A2D\u5B9A NOTION_API_KEY\uFF0C\u8ACB\u5728 Vercel \u88DC\u4E0A\u74B0\u5883\u8B8A\u6578\u3002"
+      hint: "live \u6A21\u5F0F\u4F46\u672A\u8A2D\u5B9A Notion API Key\uFF0C\u8ACB\u5728 Vercel \u88DC\u4E0A MYSELF_NOTION_API_KEY \u6216 NOTION_API_KEY\u3002"
     };
   }
   try {
@@ -353,15 +376,18 @@ async function getDataModeStatus() {
 
 // src/lib/notion/client.ts
 var _client = null;
+var _clientApiKey = null;
 function isNotionConfigured() {
-  return isLiveDataMode() && !!process.env.NOTION_API_KEY;
+  return isLiveDataMode() && !!resolveNotionApiKey();
 }
 function getNotionClient() {
-  if (!process.env.NOTION_API_KEY) {
-    throw new Error("NOTION_API_KEY \u5C1A\u672A\u8A2D\u5B9A\u3002\u8ACB\u5728 Vercel \u74B0\u5883\u8B8A\u6578\u4E2D\u52A0\u5165 Notion API Key\u3002");
+  const apiKey = resolveNotionApiKey();
+  if (!apiKey) {
+    throw new Error("Notion API Key \u5C1A\u672A\u8A2D\u5B9A\u3002\u8ACB\u5728 Vercel \u74B0\u5883\u8B8A\u6578\u4E2D\u52A0\u5165 MYSELF_NOTION_API_KEY \u6216 NOTION_API_KEY\u3002");
   }
-  if (!_client) {
-    _client = new import_client2.Client({ auth: process.env.NOTION_API_KEY });
+  if (!_client || _clientApiKey !== apiKey) {
+    _client = new import_client2.Client({ auth: apiKey });
+    _clientApiKey = apiKey;
   }
   return _client;
 }
