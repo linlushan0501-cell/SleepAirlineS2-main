@@ -216,7 +216,7 @@ function formatNotionError(err) {
 
 // src/lib/notion/parent-page.ts
 var DEFAULT_PARENT_PAGE_ID = "388a7f1b413c8015824ff6fb8bc1d65b";
-function normalizeNotionId2(id) {
+function normalizeNotionParentPageId(id) {
   const trimmed = id.trim();
   const uuidPattern = /[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/g;
   const uuid = trimmed.match(uuidPattern)?.at(-1);
@@ -236,15 +236,17 @@ function normalizeNotionId2(id) {
 }
 function resolveNotionParentPageId() {
   const raw = process.env.MYSELF_NOTION_PARENT_PAGE_ID ?? process.env.NOTION_PARENT_PAGE_ID ?? DEFAULT_PARENT_PAGE_ID;
-  return normalizeNotionId2(raw);
+  return normalizeNotionParentPageId(raw);
 }
 function isUsingCustomNotionParentPage() {
-  return resolveNotionParentPageId() !== normalizeNotionId2(DEFAULT_PARENT_PAGE_ID);
+  return resolveNotionParentPageId() !== normalizeNotionParentPageId(DEFAULT_PARENT_PAGE_ID);
 }
 
 // src/lib/notion/ensure-dashboard.ts
 var cachedDbId = null;
 var resolving = null;
+var cachedTargetDbIds = /* @__PURE__ */ new Map();
+var resolvingTargetDbIds = /* @__PURE__ */ new Map();
 async function readDatabaseTitle2(client, databaseId) {
   const db = await client.databases.retrieve({ database_id: databaseId });
   const title = db.title;
@@ -282,9 +284,10 @@ function isOwnWorkspace() {
 function canWriteSchema() {
   return process.env.NOTION_ALLOW_SCHEMA_WRITE === "true" || isOwnWorkspace();
 }
-async function findOrCreateDashboard() {
-  const client = getNotionClient();
-  const parentPageId = resolveNotionParentPageId();
+function canWriteSchemaForParent(parentPageId) {
+  return process.env.NOTION_ALLOW_SCHEMA_WRITE === "true" || parentPageId !== "388a7f1b413c8015824ff6fb8bc1d65b";
+}
+async function findOrCreateDashboard(client, parentPageId, canCreateSchema) {
   try {
     return await resolveDbIdWithFallback({
       client,
@@ -294,7 +297,7 @@ async function findOrCreateDashboard() {
       parentPageId
     });
   } catch (fallbackErr) {
-    if (!canWriteSchema()) throw fallbackErr;
+    if (!canCreateSchema) throw fallbackErr;
     try {
       return await createDashboard(client, parentPageId);
     } catch {
@@ -307,7 +310,11 @@ async function findOrCreateDashboard() {
 async function resolveDashboardDbId() {
   if (cachedDbId) return cachedDbId;
   if (!resolving) {
-    resolving = findOrCreateDashboard().then((id) => {
+    resolving = findOrCreateDashboard(
+      getNotionClient(),
+      resolveNotionParentPageId(),
+      canWriteSchema()
+    ).then((id) => {
       cachedDbId = id;
       return id;
     }).finally(() => {
@@ -316,6 +323,25 @@ async function resolveDashboardDbId() {
   }
   return resolving;
 }
+async function resolveDashboardDbIdForTarget(target) {
+  const cacheKey = `${target.key}:${target.apiKey}:${target.parentPageId}`;
+  const cached = cachedTargetDbIds.get(cacheKey);
+  if (cached) return cached;
+  const existing = resolvingTargetDbIds.get(cacheKey);
+  if (existing) return existing;
+  const promise = findOrCreateDashboard(
+    getNotionClientForApiKey(target.apiKey),
+    target.parentPageId,
+    canWriteSchemaForParent(target.parentPageId)
+  ).then((id) => {
+    cachedTargetDbIds.set(cacheKey, id);
+    return id;
+  }).finally(() => {
+    resolvingTargetDbIds.delete(cacheKey);
+  });
+  resolvingTargetDbIds.set(cacheKey, promise);
+  return promise;
+}
 
 // src/lib/notion/env.ts
 function resolveNotionApiKey() {
@@ -323,6 +349,30 @@ function resolveNotionApiKey() {
 }
 function hasNotionApiKey() {
   return !!resolveNotionApiKey();
+}
+function getPrimaryNotionTarget() {
+  const apiKey = resolveNotionApiKey();
+  if (!apiKey) return null;
+  return {
+    key: process.env.MYSELF_NOTION_API_KEY ? "myself" : "shared",
+    apiKey,
+    parentPageId: resolveNotionParentPageId()
+  };
+}
+function getSharedNotionTarget() {
+  if (!process.env.NOTION_API_KEY) return null;
+  return {
+    key: "shared",
+    apiKey: process.env.NOTION_API_KEY,
+    parentPageId: normalizeNotionParentPageId(process.env.NOTION_PARENT_PAGE_ID ?? DEFAULT_PARENT_PAGE_ID)
+  };
+}
+function getMirrorNotionTargets() {
+  const primary = getPrimaryNotionTarget();
+  const shared = getSharedNotionTarget();
+  if (!primary || !shared) return [];
+  if (primary.apiKey === shared.apiKey && primary.parentPageId === shared.parentPageId) return [];
+  return [shared];
 }
 
 // src/lib/data-mode.ts
@@ -377,6 +427,7 @@ async function getDataModeStatus() {
 // src/lib/notion/client.ts
 var _client = null;
 var _clientApiKey = null;
+var clientByApiKey = /* @__PURE__ */ new Map();
 function isNotionConfigured() {
   return isLiveDataMode() && !!resolveNotionApiKey();
 }
@@ -390,6 +441,13 @@ function getNotionClient() {
     _clientApiKey = apiKey;
   }
   return _client;
+}
+function getNotionClientForApiKey(apiKey) {
+  const existing = clientByApiKey.get(apiKey);
+  if (existing) return existing;
+  const client = new import_client2.Client({ auth: apiKey });
+  clientByApiKey.set(apiKey, client);
+  return client;
 }
 function readTitle(props, key) {
   const p = props[key];
@@ -637,11 +695,16 @@ function getLandscapeProperties() {
 // src/lib/notion/ensure-landscape-db.ts
 var cachedDbId2 = null;
 var resolving2 = null;
+var cachedTargetDbIds2 = /* @__PURE__ */ new Map();
+var resolvingTargetDbIds2 = /* @__PURE__ */ new Map();
 function isOwnWorkspace2() {
   return isUsingCustomNotionParentPage();
 }
 function canWriteSchema2() {
   return process.env.NOTION_ALLOW_SCHEMA_WRITE === "true" || isOwnWorkspace2();
+}
+function canWriteSchemaForParent2(parentPageId) {
+  return process.env.NOTION_ALLOW_SCHEMA_WRITE === "true" || parentPageId !== "388a7f1b413c8015824ff6fb8bc1d65b";
 }
 async function readDatabaseTitle3(client, databaseId) {
   const db = await client.databases.retrieve({ database_id: databaseId });
@@ -674,9 +737,7 @@ async function createLandscapeDb(client, parentPageId) {
   });
   return db.id;
 }
-async function findOrCreateLandscapeDb() {
-  const client = getNotionClient();
-  const parentPageId = resolveNotionParentPageId();
+async function findOrCreateLandscapeDb(client, parentPageId, canCreateSchema) {
   try {
     return await resolveDbIdWithFallback({
       client,
@@ -686,7 +747,7 @@ async function findOrCreateLandscapeDb() {
       parentPageId
     });
   } catch (fallbackErr) {
-    if (!canWriteSchema2()) throw fallbackErr;
+    if (!canCreateSchema) throw fallbackErr;
     try {
       return await createLandscapeDb(client, parentPageId);
     } catch {
@@ -699,7 +760,11 @@ async function findOrCreateLandscapeDb() {
 async function resolveLandscapeDbId() {
   if (cachedDbId2) return cachedDbId2;
   if (!resolving2) {
-    resolving2 = findOrCreateLandscapeDb().then((id) => {
+    resolving2 = findOrCreateLandscapeDb(
+      getNotionClient(),
+      resolveNotionParentPageId(),
+      canWriteSchema2()
+    ).then((id) => {
       cachedDbId2 = id;
       return id;
     }).finally(() => {
@@ -708,10 +773,31 @@ async function resolveLandscapeDbId() {
   }
   return resolving2;
 }
+async function resolveLandscapeDbIdForTarget(target) {
+  const cacheKey = `${target.key}:${target.apiKey}:${target.parentPageId}`;
+  const cached = cachedTargetDbIds2.get(cacheKey);
+  if (cached) return cached;
+  const existing = resolvingTargetDbIds2.get(cacheKey);
+  if (existing) return existing;
+  const promise = findOrCreateLandscapeDb(
+    getNotionClientForApiKey(target.apiKey),
+    target.parentPageId,
+    canWriteSchemaForParent2(target.parentPageId)
+  ).then((id) => {
+    cachedTargetDbIds2.set(cacheKey, id);
+    return id;
+  }).finally(() => {
+    resolvingTargetDbIds2.delete(cacheKey);
+  });
+  resolvingTargetDbIds2.set(cacheKey, promise);
+  return promise;
+}
 
 // src/lib/notion/schema-introspect.ts
 var dashboardPropCache = null;
 var landscapePropCache = null;
+var dashboardPropCacheByTarget = /* @__PURE__ */ new Map();
+var landscapePropCacheByTarget = /* @__PURE__ */ new Map();
 function extractProperties(db) {
   const props = db.properties;
   return Object.entries(props ?? {}).map(([name, def]) => ({
@@ -741,6 +827,16 @@ async function getDashboardPropertyNames() {
   dashboardPropCache = await loadPropertyNames(client, dbId);
   return dashboardPropCache;
 }
+async function getDashboardPropertyNamesForTarget(target) {
+  const cacheKey = `${target.key}:${target.apiKey}:${target.parentPageId}`;
+  const cached = dashboardPropCacheByTarget.get(cacheKey);
+  if (cached) return cached;
+  const client = getNotionClientForApiKey(target.apiKey);
+  const dbId = await resolveDashboardDbIdForTarget(target);
+  const names = await loadPropertyNames(client, dbId);
+  dashboardPropCacheByTarget.set(cacheKey, names);
+  return names;
+}
 async function getLandscapePropertyNames() {
   if (!isNotionConfigured()) return /* @__PURE__ */ new Set();
   if (landscapePropCache) return landscapePropCache;
@@ -748,6 +844,16 @@ async function getLandscapePropertyNames() {
   const dbId = await resolveLandscapeDbId();
   landscapePropCache = await loadPropertyNames(client, dbId);
   return landscapePropCache;
+}
+async function getLandscapePropertyNamesForTarget(target) {
+  const cacheKey = `${target.key}:${target.apiKey}:${target.parentPageId}`;
+  const cached = landscapePropCacheByTarget.get(cacheKey);
+  if (cached) return cached;
+  const client = getNotionClientForApiKey(target.apiKey);
+  const dbId = await resolveLandscapeDbIdForTarget(target);
+  const names = await loadPropertyNames(client, dbId);
+  landscapePropCacheByTarget.set(cacheKey, names);
+  return names;
 }
 async function introspectNotionSchemas() {
   if (!isNotionConfigured()) {
@@ -854,6 +960,46 @@ function generateFlightId(passengerId) {
   const suffix = passengerId.replace(/[^a-zA-Z0-9]/g, "").toUpperCase().slice(0, 6);
   return `FL-${suffix}-${ts}`;
 }
+async function findFlightPageIdByFlightId(target, flightId) {
+  const client = getNotionClientForApiKey(target.apiKey);
+  const dbId = await resolveDashboardDbIdForTarget(target);
+  const result = await client.databases.query({
+    database_id: dbId,
+    filter: { property: "Flight ID", title: { equals: flightId } },
+    page_size: 1
+  });
+  return result.results[0]?.id ?? null;
+}
+async function createFlightMirror(properties) {
+  for (const target of getMirrorNotionTargets()) {
+    try {
+      const client = getNotionClientForApiKey(target.apiKey);
+      const dbId = await resolveDashboardDbIdForTarget(target);
+      const allowed = await getDashboardPropertyNamesForTarget(target);
+      await client.pages.create({
+        parent: { database_id: dbId },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        properties: pickExistingProperties(properties, allowed)
+      });
+    } catch (err) {
+      console.error("[Notion sync] Failed to mirror flight create:", err);
+    }
+  }
+}
+async function updateFlightMirror(flightId, properties) {
+  for (const target of getMirrorNotionTargets()) {
+    try {
+      const pageId = await findFlightPageIdByFlightId(target, flightId);
+      if (!pageId) continue;
+      const client = getNotionClientForApiKey(target.apiKey);
+      const allowed = await getDashboardPropertyNamesForTarget(target);
+      const mirrorProperties = pickExistingProperties(properties, allowed);
+      await client.pages.update({ page_id: pageId, properties: mirrorProperties });
+    } catch (err) {
+      console.error("[Notion sync] Failed to mirror flight update:", err);
+    }
+  }
+}
 async function createFlight(params) {
   const now = (/* @__PURE__ */ new Date()).toISOString();
   const takeoffTime = params.takeoffTime ?? now;
@@ -936,6 +1082,7 @@ async function createFlight(params) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     properties: pickExistingProperties(fullProperties, allowed)
   });
+  await createFlightMirror(fullProperties);
   return parseFlight(page);
 }
 async function getActiveFlight(passengerId) {
@@ -978,6 +1125,8 @@ async function updateFlight(notionId, updates) {
   const client = getNotionClient();
   const now = (/* @__PURE__ */ new Date()).toISOString();
   const allowed = await getDashboardPropertyNames();
+  const currentFlight = notionId ? await client.pages.retrieve({ page_id: notionId }) : null;
+  const currentFlightId = currentFlight ? readFlightId2(currentFlight.properties) : "";
   const fullProperties = { "Updated At": wDate(now) };
   if (updates.status !== void 0) fullProperties["Status"] = wSelect(updates.status);
   if (updates.passengerName !== void 0) fullProperties["Name"] = wText(updates.passengerName);
@@ -997,6 +1146,9 @@ async function updateFlight(notionId, updates) {
   if (updates.relatedPassenger !== void 0) fullProperties["Related Passenger"] = wText(updates.relatedPassenger);
   const properties = pickExistingProperties(fullProperties, allowed);
   await client.pages.update({ page_id: notionId, properties });
+  if (currentFlightId) {
+    await updateFlightMirror(currentFlightId, fullProperties);
+  }
 }
 function flightActivityTime(f) {
   const t = f.status === "landed" && f.landingTime ? f.landingTime : f.takeoffTime;
@@ -107868,8 +108020,8 @@ async function generateLandingScenery(city, country, displayName, flightId) {
 
 // src/lib/notion/notion-file-upload.ts
 var NOTION_API_VERSION = "2025-09-03";
-function notionHeaders() {
-  const apiKey = resolveNotionApiKey();
+function notionHeaders(apiKeyOverride) {
+  const apiKey = apiKeyOverride ?? resolveNotionApiKey();
   if (!apiKey) {
     throw new Error("Notion API Key \u5C1A\u672A\u8A2D\u5B9A\uFF0C\u7121\u6CD5\u4E0A\u50B3\u964D\u843D\u98A8\u666F\u5716\u3002");
   }
@@ -107878,11 +108030,11 @@ function notionHeaders() {
     "Notion-Version": NOTION_API_VERSION
   };
 }
-async function uploadImageToNotion(buffer, filename, contentType = "image/png") {
+async function uploadImageToNotion(buffer, filename, contentType = "image/png", apiKey) {
   const createRes = await fetch("https://api.notion.com/v1/file_uploads", {
     method: "POST",
     headers: {
-      ...notionHeaders(),
+      ...notionHeaders(apiKey),
       "Content-Type": "application/json"
     },
     body: JSON.stringify({ filename, content_type: contentType })
@@ -107896,7 +108048,7 @@ async function uploadImageToNotion(buffer, filename, contentType = "image/png") 
   form.append("file", new Blob([new Uint8Array(buffer)], { type: contentType }), filename);
   const sendRes = await fetch(`https://api.notion.com/v1/file_uploads/${uploadId}/send`, {
     method: "POST",
-    headers: notionHeaders(),
+    headers: notionHeaders(apiKey),
     body: form
   });
   if (!sendRes.ok) {
@@ -107940,38 +108092,18 @@ function parseLandscape(page) {
     createdAt: readDate(props, "Created At") ?? (/* @__PURE__ */ new Date()).toISOString()
   };
 }
-async function saveLandingScenery(params) {
-  const now = (/* @__PURE__ */ new Date()).toISOString();
-  const entryId = `SC-${params.flightId}`;
-  if (!isNotionConfigured()) {
-    const dataUrl = `data:${params.contentType};base64,${params.imageBuffer.toString("base64")}`;
-    const record = {
-      notionId: `mem_scenery_${params.flightId}`,
-      entryId,
-      flightId: params.flightId,
-      passengerId: params.passengerId,
-      passengerName: params.passengerName,
-      groupId: params.groupId,
-      arrivalLocation: params.arrivalLocation,
-      country: params.country,
-      imageUrl: dataUrl,
-      imagePrompt: params.imagePrompt,
-      landingTime: params.landingTime,
-      createdAt: now
-    };
-    mem3.push(record);
-    return record;
-  }
+async function createLandingSceneryRecord(params) {
   const fileUploadId = await uploadImageToNotion(
     params.imageBuffer,
     params.filename,
-    params.contentType
+    params.contentType,
+    params.target?.apiKey
   );
-  const client = getNotionClient();
-  const dbId = await resolveLandscapeDbId();
-  const allowed = await getLandscapePropertyNames();
+  const client = params.target ? getNotionClientForApiKey(params.target.apiKey) : getNotionClient();
+  const dbId = params.target ? await resolveLandscapeDbIdForTarget(params.target) : await resolveLandscapeDbId();
+  const allowed = params.target ? await getLandscapePropertyNamesForTarget(params.target) : await getLandscapePropertyNames();
   const fullProperties = {
-    "Entry ID": wTitle(entryId),
+    "Entry ID": wTitle(params.entryId),
     "Flight ID": wText(params.flightId),
     "Passenger ID": wText(params.passengerId),
     "Name": wText(params.passengerName),
@@ -107981,7 +108113,7 @@ async function saveLandingScenery(params) {
     "Image": wFileUpload(fileUploadId, params.filename),
     "Image Prompt": wText(params.imagePrompt),
     "Landing Time": wDate(params.landingTime),
-    "Created At": wDate(now)
+    "Created At": wDate(params.createdAt)
   };
   const page = await client.pages.create({
     parent: { database_id: dbId },
@@ -107998,6 +108130,41 @@ async function saveLandingScenery(params) {
     });
   }
   return parseLandscape(fresh);
+}
+async function mirrorLandingScenery(params) {
+  for (const target of getMirrorNotionTargets()) {
+    try {
+      await createLandingSceneryRecord({ ...params, target });
+    } catch (err) {
+      console.error("[Notion sync] Failed to mirror landing scenery:", err);
+    }
+  }
+}
+async function saveLandingScenery(params) {
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const entryId = `SC-${params.flightId}`;
+  if (!isNotionConfigured()) {
+    const dataUrl = `data:${params.contentType};base64,${params.imageBuffer.toString("base64")}`;
+    const record2 = {
+      notionId: `mem_scenery_${params.flightId}`,
+      entryId,
+      flightId: params.flightId,
+      passengerId: params.passengerId,
+      passengerName: params.passengerName,
+      groupId: params.groupId,
+      arrivalLocation: params.arrivalLocation,
+      country: params.country,
+      imageUrl: dataUrl,
+      imagePrompt: params.imagePrompt,
+      landingTime: params.landingTime,
+      createdAt: now
+    };
+    mem3.push(record2);
+    return record2;
+  }
+  const record = await createLandingSceneryRecord({ ...params, entryId, createdAt: now });
+  await mirrorLandingScenery({ ...params, entryId, createdAt: now });
+  return record;
 }
 async function getLandscapeByFlightId(flightId) {
   if (!flightId) return null;

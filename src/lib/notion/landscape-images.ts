@@ -1,6 +1,7 @@
 import type { LandingScenery } from '../../types';
 import {
   getNotionClient,
+  getNotionClientForApiKey,
   isNotionConfigured,
   readTitle,
   readText,
@@ -14,9 +15,10 @@ import {
   wDate,
   wUrl,
 } from './client';
-import { resolveLandscapeDbId } from './ensure-landscape-db';
+import { resolveLandscapeDbId, resolveLandscapeDbIdForTarget } from './ensure-landscape-db';
 import { uploadImageToNotion, wFileUpload } from './notion-file-upload';
-import { getLandscapePropertyNames, pickExistingProperties } from './schema-introspect';
+import { getLandscapePropertyNames, getLandscapePropertyNamesForTarget, pickExistingProperties } from './schema-introspect';
+import { getMirrorNotionTargets, type NotionTarget } from './env';
 
 const mem: LandingScenery[] = [];
 
@@ -40,6 +42,84 @@ function parseLandscape(page: Record<string, unknown>): LandingScenery {
     landingTime: readDate(props, 'Landing Time'),
     createdAt: readDate(props, 'Created At') ?? new Date().toISOString(),
   };
+}
+
+async function createLandingSceneryRecord(params: {
+  target?: NotionTarget;
+  entryId: string;
+  flightId: string;
+  passengerId: string;
+  passengerName: string;
+  groupId: string;
+  arrivalLocation: string;
+  country: string;
+  imageBuffer: Buffer;
+  filename: string;
+  contentType: string;
+  imagePrompt: string;
+  landingTime: string;
+  createdAt: string;
+}): Promise<LandingScenery | null> {
+  const fileUploadId = await uploadImageToNotion(
+    params.imageBuffer,
+    params.filename,
+    params.contentType,
+    params.target?.apiKey
+  );
+
+  const client = params.target
+    ? getNotionClientForApiKey(params.target.apiKey)
+    : getNotionClient();
+  const dbId = params.target
+    ? await resolveLandscapeDbIdForTarget(params.target)
+    : await resolveLandscapeDbId();
+  const allowed = params.target
+    ? await getLandscapePropertyNamesForTarget(params.target)
+    : await getLandscapePropertyNames();
+
+  const fullProperties = {
+      'Entry ID': wTitle(params.entryId),
+      'Flight ID': wText(params.flightId),
+      'Passenger ID': wText(params.passengerId),
+      'Name': wText(params.passengerName),
+      'Group ID': wSelect(params.groupId),
+      'Arrival Location': wText(params.arrivalLocation),
+      'Country': wText(params.country),
+      'Image': wFileUpload(fileUploadId, params.filename),
+      'Image Prompt': wText(params.imagePrompt),
+      'Landing Time': wDate(params.landingTime),
+      'Created At': wDate(params.createdAt),
+  };
+
+  const page = await client.pages.create({
+    parent: { database_id: dbId },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    properties: pickExistingProperties(fullProperties, allowed) as any,
+  });
+
+  const fresh = await client.pages.retrieve({ page_id: page.id });
+  const props = (fresh as { properties: Record<string, unknown> }).properties;
+  const imageUrl = resolveImageUrl(props);
+
+  if (imageUrl && allowed.has('Image URL')) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await client.pages.update({
+      page_id: page.id,
+      properties: { 'Image URL': wUrl(imageUrl) } as any,
+    });
+  }
+
+  return parseLandscape(fresh as unknown as Record<string, unknown>);
+}
+
+async function mirrorLandingScenery(params: Parameters<typeof createLandingSceneryRecord>[0]): Promise<void> {
+  for (const target of getMirrorNotionTargets()) {
+    try {
+      await createLandingSceneryRecord({ ...params, target });
+    } catch (err) {
+      console.error('[Notion sync] Failed to mirror landing scenery:', err);
+    }
+  }
 }
 
 export async function saveLandingScenery(params: {
@@ -78,49 +158,9 @@ export async function saveLandingScenery(params: {
     return record;
   }
 
-  const fileUploadId = await uploadImageToNotion(
-    params.imageBuffer,
-    params.filename,
-    params.contentType
-  );
-
-  const client = getNotionClient();
-  const dbId = await resolveLandscapeDbId();
-  const allowed = await getLandscapePropertyNames();
-
-  const fullProperties = {
-      'Entry ID': wTitle(entryId),
-      'Flight ID': wText(params.flightId),
-      'Passenger ID': wText(params.passengerId),
-      'Name': wText(params.passengerName),
-      'Group ID': wSelect(params.groupId),
-      'Arrival Location': wText(params.arrivalLocation),
-      'Country': wText(params.country),
-      'Image': wFileUpload(fileUploadId, params.filename),
-      'Image Prompt': wText(params.imagePrompt),
-      'Landing Time': wDate(params.landingTime),
-      'Created At': wDate(now),
-  };
-
-  const page = await client.pages.create({
-    parent: { database_id: dbId },
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    properties: pickExistingProperties(fullProperties, allowed) as any,
-  });
-
-  const fresh = await client.pages.retrieve({ page_id: page.id });
-  const props = (fresh as { properties: Record<string, unknown> }).properties;
-  const imageUrl = resolveImageUrl(props);
-
-  if (imageUrl && allowed.has('Image URL')) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await client.pages.update({
-      page_id: page.id,
-      properties: { 'Image URL': wUrl(imageUrl) } as any,
-    });
-  }
-
-  return parseLandscape(fresh as unknown as Record<string, unknown>);
+  const record = await createLandingSceneryRecord({ ...params, entryId, createdAt: now });
+  await mirrorLandingScenery({ ...params, entryId, createdAt: now });
+  return record;
 }
 
 export async function getLandscapeByFlightId(flightId: string): Promise<LandingScenery | null> {

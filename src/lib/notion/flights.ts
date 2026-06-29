@@ -1,14 +1,15 @@
 import type { Flight, FlightStatus, NarrativeRegion, RouteDirection, BroadcastStyle, SocialCueType } from '../../types';
 import {
-  getNotionClient, isNotionConfigured,
+  getNotionClient, getNotionClientForApiKey, isNotionConfigured,
   readTitle, readText, readSelect, readNumber, readDate,
   wTitle, wText, wSelect, wNumber, wDate,
 } from './client';
-import { resolveDashboardDbId } from './ensure-dashboard';
+import { resolveDashboardDbId, resolveDashboardDbIdForTarget } from './ensure-dashboard';
 import { syncMemPassenger } from './passengers';
 import { calculateFlightProgress } from '../flight/progress';
 import { getNarrativeRegion } from '../flight/region';
-import { getDashboardPropertyNames, pickExistingProperties } from './schema-introspect';
+import { getDashboardPropertyNames, getDashboardPropertyNamesForTarget, pickExistingProperties } from './schema-introspect';
+import { getMirrorNotionTargets, type NotionTarget } from './env';
 
 const mem: Flight[] = [];
 
@@ -72,6 +73,55 @@ function generateFlightId(passengerId: string): string {
   const ts = Date.now().toString(36).toUpperCase();
   const suffix = passengerId.replace(/[^a-zA-Z0-9]/g, '').toUpperCase().slice(0, 6);
   return `FL-${suffix}-${ts}`;
+}
+
+async function findFlightPageIdByFlightId(target: NotionTarget, flightId: string): Promise<string | null> {
+  const client = getNotionClientForApiKey(target.apiKey);
+  const dbId = await resolveDashboardDbIdForTarget(target);
+  const result = await client.databases.query({
+    database_id: dbId,
+    filter: { property: 'Flight ID', title: { equals: flightId } },
+    page_size: 1,
+  });
+
+  return result.results[0]?.id ?? null;
+}
+
+async function createFlightMirror(properties: Record<string, unknown>): Promise<void> {
+  for (const target of getMirrorNotionTargets()) {
+    try {
+      const client = getNotionClientForApiKey(target.apiKey);
+      const dbId = await resolveDashboardDbIdForTarget(target);
+      const allowed = await getDashboardPropertyNamesForTarget(target);
+      await client.pages.create({
+        parent: { database_id: dbId },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        properties: pickExistingProperties(properties, allowed) as any,
+      });
+    } catch (err) {
+      console.error('[Notion sync] Failed to mirror flight create:', err);
+    }
+  }
+}
+
+async function updateFlightMirror(
+  flightId: string,
+  properties: Record<string, unknown>
+): Promise<void> {
+  for (const target of getMirrorNotionTargets()) {
+    try {
+      const pageId = await findFlightPageIdByFlightId(target, flightId);
+      if (!pageId) continue;
+
+      const client = getNotionClientForApiKey(target.apiKey);
+      const allowed = await getDashboardPropertyNamesForTarget(target);
+      const mirrorProperties = pickExistingProperties(properties, allowed);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await client.pages.update({ page_id: pageId, properties: mirrorProperties as any });
+    } catch (err) {
+      console.error('[Notion sync] Failed to mirror flight update:', err);
+    }
+  }
 }
 
 export async function createFlight(params: {
@@ -162,6 +212,8 @@ export async function createFlight(params: {
     properties: pickExistingProperties(fullProperties, allowed) as any,
   });
 
+  await createFlightMirror(fullProperties);
+
   return parseFlight(page as unknown as Record<string, unknown>);
 }
 
@@ -230,6 +282,10 @@ export async function updateFlight(
   const client = getNotionClient();
   const now = new Date().toISOString();
   const allowed = await getDashboardPropertyNames();
+  const currentFlight = notionId ? await client.pages.retrieve({ page_id: notionId }) : null;
+  const currentFlightId = currentFlight
+    ? readFlightId((currentFlight as { properties: Record<string, unknown> }).properties)
+    : '';
 
   const fullProperties: Record<string, unknown> = { 'Updated At': wDate(now) };
   if (updates.status !== undefined) fullProperties['Status'] = wSelect(updates.status);
@@ -253,6 +309,9 @@ export async function updateFlight(
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   await client.pages.update({ page_id: notionId, properties: properties as any });
+  if (currentFlightId) {
+    await updateFlightMirror(currentFlightId, fullProperties);
+  }
 }
 
 function flightActivityTime(f: Flight): number {

@@ -1,14 +1,17 @@
 import type { Client } from '@notionhq/client';
-import { getNotionClient, isNotionConfigured } from './client';
-import { resolveDashboardDbId } from './ensure-dashboard';
-import { resolveLandscapeDbId } from './ensure-landscape-db';
+import { getNotionClient, getNotionClientForApiKey, isNotionConfigured } from './client';
+import { resolveDashboardDbId, resolveDashboardDbIdForTarget } from './ensure-dashboard';
+import { resolveLandscapeDbId, resolveLandscapeDbIdForTarget } from './ensure-landscape-db';
 import { DASHBOARD_PROPERTY_ORDER } from './dashboard-schema';
 import { getDashboardProperties } from './dashboard-schema';
+import type { NotionTarget } from './env';
 
 type PropMeta = { name: string; type: string; selectOptions?: string[] };
 
 let dashboardPropCache: Set<string> | null = null;
 let landscapePropCache: Set<string> | null = null;
+const dashboardPropCacheByTarget = new Map<string, Set<string>>();
+const landscapePropCacheByTarget = new Map<string, Set<string>>();
 
 function extractProperties(db: Record<string, unknown>): PropMeta[] {
   const props = db.properties as Record<
@@ -59,6 +62,18 @@ export async function getDashboardPropertyNames(): Promise<Set<string>> {
   return dashboardPropCache;
 }
 
+export async function getDashboardPropertyNamesForTarget(target: NotionTarget): Promise<Set<string>> {
+  const cacheKey = `${target.key}:${target.apiKey}:${target.parentPageId}`;
+  const cached = dashboardPropCacheByTarget.get(cacheKey);
+  if (cached) return cached;
+
+  const client = getNotionClientForApiKey(target.apiKey);
+  const dbId = await resolveDashboardDbIdForTarget(target);
+  const names = await loadPropertyNames(client, dbId);
+  dashboardPropCacheByTarget.set(cacheKey, names);
+  return names;
+}
+
 export async function getLandscapePropertyNames(): Promise<Set<string>> {
   if (!isNotionConfigured()) return new Set();
   if (landscapePropCache) return landscapePropCache;
@@ -68,9 +83,23 @@ export async function getLandscapePropertyNames(): Promise<Set<string>> {
   return landscapePropCache;
 }
 
+export async function getLandscapePropertyNamesForTarget(target: NotionTarget): Promise<Set<string>> {
+  const cacheKey = `${target.key}:${target.apiKey}:${target.parentPageId}`;
+  const cached = landscapePropCacheByTarget.get(cacheKey);
+  if (cached) return cached;
+
+  const client = getNotionClientForApiKey(target.apiKey);
+  const dbId = await resolveLandscapeDbIdForTarget(target);
+  const names = await loadPropertyNames(client, dbId);
+  landscapePropCacheByTarget.set(cacheKey, names);
+  return names;
+}
+
 export function clearSchemaCache(): void {
   dashboardPropCache = null;
   landscapePropCache = null;
+  dashboardPropCacheByTarget.clear();
+  landscapePropCacheByTarget.clear();
 }
 
 export async function introspectNotionSchemas(): Promise<{

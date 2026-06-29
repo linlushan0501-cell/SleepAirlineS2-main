@@ -3,12 +3,15 @@ import {
   LANDSCAPE_DB_TITLE,
   getLandscapeProperties,
 } from './landscape-schema';
-import { getNotionClient } from './client';
+import { getNotionClient, getNotionClientForApiKey } from './client';
 import { resolveDbIdWithFallback } from './db-access';
 import { isUsingCustomNotionParentPage, resolveNotionParentPageId } from './parent-page';
+import type { NotionTarget } from './env';
 
 let cachedDbId: string | null = null;
 let resolving: Promise<string> | null = null;
+const cachedTargetDbIds = new Map<string, string>();
+const resolvingTargetDbIds = new Map<string, Promise<string>>();
 
 function isOwnWorkspace(): boolean {
   return isUsingCustomNotionParentPage();
@@ -16,6 +19,11 @@ function isOwnWorkspace(): boolean {
 
 function canWriteSchema(): boolean {
   return process.env.NOTION_ALLOW_SCHEMA_WRITE === 'true' || isOwnWorkspace();
+}
+
+function canWriteSchemaForParent(parentPageId: string): boolean {
+  return process.env.NOTION_ALLOW_SCHEMA_WRITE === 'true'
+    || parentPageId !== '388a7f1b413c8015824ff6fb8bc1d65b';
 }
 
 async function readDatabaseTitle(client: Client, databaseId: string): Promise<string> {
@@ -56,10 +64,11 @@ async function createLandscapeDb(client: Client, parentPageId: string): Promise<
   return db.id;
 }
 
-async function findOrCreateLandscapeDb(): Promise<string> {
-  const client = getNotionClient();
-  const parentPageId = resolveNotionParentPageId();
-
+async function findOrCreateLandscapeDb(
+  client: Client,
+  parentPageId: string,
+  canCreateSchema: boolean
+): Promise<string> {
   try {
     return await resolveDbIdWithFallback({
       client,
@@ -69,7 +78,7 @@ async function findOrCreateLandscapeDb(): Promise<string> {
       parentPageId,
     });
   } catch (fallbackErr) {
-    if (!canWriteSchema()) throw fallbackErr;
+    if (!canCreateSchema) throw fallbackErr;
 
     try {
       return await createLandscapeDb(client, parentPageId);
@@ -85,7 +94,11 @@ export async function resolveLandscapeDbId(): Promise<string> {
   if (cachedDbId) return cachedDbId;
 
   if (!resolving) {
-    resolving = findOrCreateLandscapeDb()
+    resolving = findOrCreateLandscapeDb(
+      getNotionClient(),
+      resolveNotionParentPageId(),
+      canWriteSchema()
+    )
       .then((id) => {
         cachedDbId = id;
         return id;
@@ -96,4 +109,29 @@ export async function resolveLandscapeDbId(): Promise<string> {
   }
 
   return resolving;
+}
+
+export async function resolveLandscapeDbIdForTarget(target: NotionTarget): Promise<string> {
+  const cacheKey = `${target.key}:${target.apiKey}:${target.parentPageId}`;
+  const cached = cachedTargetDbIds.get(cacheKey);
+  if (cached) return cached;
+
+  const existing = resolvingTargetDbIds.get(cacheKey);
+  if (existing) return existing;
+
+  const promise = findOrCreateLandscapeDb(
+    getNotionClientForApiKey(target.apiKey),
+    target.parentPageId,
+    canWriteSchemaForParent(target.parentPageId)
+  )
+    .then((id) => {
+      cachedTargetDbIds.set(cacheKey, id);
+      return id;
+    })
+    .finally(() => {
+      resolvingTargetDbIds.delete(cacheKey);
+    });
+
+  resolvingTargetDbIds.set(cacheKey, promise);
+  return promise;
 }

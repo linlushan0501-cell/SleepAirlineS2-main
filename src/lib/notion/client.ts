@@ -4,6 +4,7 @@ import { resolveNotionApiKey } from './env';
 
 let _client: Client | null = null;
 let _clientApiKey: string | null = null;
+const clientByApiKey = new Map<string, Client>();
 
 /** live 模式且有 Notion API key 時才走 Notion；preview 一律用記憶體。 */
 export function isNotionConfigured(): boolean {
@@ -20,6 +21,15 @@ export function getNotionClient(): Client {
     _clientApiKey = apiKey;
   }
   return _client;
+}
+
+export function getNotionClientForApiKey(apiKey: string): Client {
+  const existing = clientByApiKey.get(apiKey);
+  if (existing) return existing;
+
+  const client = new Client({ auth: apiKey });
+  clientByApiKey.set(apiKey, client);
+  return client;
 }
 
 // ---- Property helpers: read ----

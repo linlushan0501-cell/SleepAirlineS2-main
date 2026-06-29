@@ -2,8 +2,8 @@ import { resolveNotionApiKey } from './env';
 
 const NOTION_API_VERSION = '2025-09-03';
 
-function notionHeaders(): Record<string, string> {
-  const apiKey = resolveNotionApiKey();
+function notionHeaders(apiKeyOverride?: string): Record<string, string> {
+  const apiKey = apiKeyOverride ?? resolveNotionApiKey();
   if (!apiKey) {
     throw new Error('Notion API Key 尚未設定，無法上傳降落風景圖。');
   }
@@ -18,12 +18,13 @@ function notionHeaders(): Record<string, string> {
 export async function uploadImageToNotion(
   buffer: Buffer,
   filename: string,
-  contentType = 'image/png'
+  contentType = 'image/png',
+  apiKey?: string
 ): Promise<string> {
   const createRes = await fetch('https://api.notion.com/v1/file_uploads', {
     method: 'POST',
     headers: {
-      ...notionHeaders(),
+      ...notionHeaders(apiKey),
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({ filename, content_type: contentType }),
@@ -41,7 +42,7 @@ export async function uploadImageToNotion(
 
   const sendRes = await fetch(`https://api.notion.com/v1/file_uploads/${uploadId}/send`, {
     method: 'POST',
-    headers: notionHeaders(),
+    headers: notionHeaders(apiKey),
     body: form,
   });
 

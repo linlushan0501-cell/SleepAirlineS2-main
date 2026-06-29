@@ -1,6 +1,6 @@
 export const DEFAULT_PARENT_PAGE_ID = '388a7f1b413c8015824ff6fb8bc1d65b';
 
-function normalizeNotionId(id: string): string {
+export function normalizeNotionParentPageId(id: string): string {
   const trimmed = id.trim();
   const uuidPattern = /[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/g;
   const uuid = trimmed.match(uuidPattern)?.at(-1);
@@ -29,9 +29,9 @@ export function resolveNotionParentPageId(): string {
     ?? process.env.NOTION_PARENT_PAGE_ID
     ?? DEFAULT_PARENT_PAGE_ID;
 
-  return normalizeNotionId(raw);
+  return normalizeNotionParentPageId(raw);
 }
 
 export function isUsingCustomNotionParentPage(): boolean {
-  return resolveNotionParentPageId() !== normalizeNotionId(DEFAULT_PARENT_PAGE_ID);
+  return resolveNotionParentPageId() !== normalizeNotionParentPageId(DEFAULT_PARENT_PAGE_ID);
 }

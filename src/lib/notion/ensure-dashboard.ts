@@ -1,11 +1,14 @@
 import type { Client } from '@notionhq/client';
 import { DASHBOARD_TITLE, getDashboardProperties } from './dashboard-schema';
-import { getNotionClient } from './client';
+import { getNotionClient, getNotionClientForApiKey } from './client';
 import { resolveDbIdWithFallback } from './db-access';
 import { isUsingCustomNotionParentPage, resolveNotionParentPageId } from './parent-page';
+import type { NotionTarget } from './env';
 
 let cachedDbId: string | null = null;
 let resolving: Promise<string> | null = null;
+const cachedTargetDbIds = new Map<string, string>();
+const resolvingTargetDbIds = new Map<string, Promise<string>>();
 
 async function readDatabaseTitle(client: Client, databaseId: string): Promise<string> {
   const db = await client.databases.retrieve({ database_id: databaseId });
@@ -53,10 +56,16 @@ function canWriteSchema(): boolean {
   return process.env.NOTION_ALLOW_SCHEMA_WRITE === 'true' || isOwnWorkspace();
 }
 
-async function findOrCreateDashboard(): Promise<string> {
-  const client = getNotionClient();
-  const parentPageId = resolveNotionParentPageId();
+function canWriteSchemaForParent(parentPageId: string): boolean {
+  return process.env.NOTION_ALLOW_SCHEMA_WRITE === 'true'
+    || parentPageId !== '388a7f1b413c8015824ff6fb8bc1d65b';
+}
 
+async function findOrCreateDashboard(
+  client: Client,
+  parentPageId: string,
+  canCreateSchema: boolean
+): Promise<string> {
   try {
     return await resolveDbIdWithFallback({
       client,
@@ -66,7 +75,7 @@ async function findOrCreateDashboard(): Promise<string> {
       parentPageId,
     });
   } catch (fallbackErr) {
-    if (!canWriteSchema()) throw fallbackErr;
+    if (!canCreateSchema) throw fallbackErr;
 
     try {
       return await createDashboard(client, parentPageId);
@@ -82,7 +91,11 @@ export async function resolveDashboardDbId(): Promise<string> {
   if (cachedDbId) return cachedDbId;
 
   if (!resolving) {
-    resolving = findOrCreateDashboard()
+    resolving = findOrCreateDashboard(
+      getNotionClient(),
+      resolveNotionParentPageId(),
+      canWriteSchema()
+    )
       .then((id) => {
         cachedDbId = id;
         return id;
@@ -93,4 +106,29 @@ export async function resolveDashboardDbId(): Promise<string> {
   }
 
   return resolving;
+}
+
+export async function resolveDashboardDbIdForTarget(target: NotionTarget): Promise<string> {
+  const cacheKey = `${target.key}:${target.apiKey}:${target.parentPageId}`;
+  const cached = cachedTargetDbIds.get(cacheKey);
+  if (cached) return cached;
+
+  const existing = resolvingTargetDbIds.get(cacheKey);
+  if (existing) return existing;
+
+  const promise = findOrCreateDashboard(
+    getNotionClientForApiKey(target.apiKey),
+    target.parentPageId,
+    canWriteSchemaForParent(target.parentPageId)
+  )
+    .then((id) => {
+      cachedTargetDbIds.set(cacheKey, id);
+      return id;
+    })
+    .finally(() => {
+      resolvingTargetDbIds.delete(cacheKey);
+    });
+
+  resolvingTargetDbIds.set(cacheKey, promise);
+  return promise;
 }
