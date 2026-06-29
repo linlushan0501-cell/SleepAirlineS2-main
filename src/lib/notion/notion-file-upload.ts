@@ -1,8 +1,15 @@
+import { resolveNotionApiKey } from './env';
+
 const NOTION_API_VERSION = '2025-09-03';
 
 function notionHeaders(): Record<string, string> {
+  const apiKey = resolveNotionApiKey();
+  if (!apiKey) {
+    throw new Error('Notion API Key 尚未設定，無法上傳降落風景圖。');
+  }
+
   return {
-    Authorization: `Bearer ${process.env.NOTION_API_KEY}`,
+    Authorization: `Bearer ${apiKey}`,
     'Notion-Version': NOTION_API_VERSION,
   };
 }

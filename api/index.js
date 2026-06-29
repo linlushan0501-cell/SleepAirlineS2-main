@@ -107869,8 +107869,12 @@ async function generateLandingScenery(city, country, displayName, flightId) {
 // src/lib/notion/notion-file-upload.ts
 var NOTION_API_VERSION = "2025-09-03";
 function notionHeaders() {
+  const apiKey = resolveNotionApiKey();
+  if (!apiKey) {
+    throw new Error("Notion API Key \u5C1A\u672A\u8A2D\u5B9A\uFF0C\u7121\u6CD5\u4E0A\u50B3\u964D\u843D\u98A8\u666F\u5716\u3002");
+  }
   return {
-    Authorization: `Bearer ${process.env.NOTION_API_KEY}`,
+    Authorization: `Bearer ${apiKey}`,
     "Notion-Version": NOTION_API_VERSION
   };
 }
