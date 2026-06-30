@@ -23,3 +23,9 @@ assert.match(source, /def decide_next_action/, 'controller should decide takeoff
 assert.match(source, /not_started.*takeoff/s, 'not_started should map to takeoff');
 assert.match(source, /landed.*takeoff/s, 'landed should map to takeoff');
 assert.match(source, /in_flight.*land/s, 'in_flight should map to land');
+assert.match(source, /def handle_button_press/, 'controller should handle a button press');
+assert.match(source, /busy/, 'controller should ignore presses while busy');
+assert.match(source, /def run_gpio_loop/, 'controller should define GPIO loop');
+assert.match(source, /from gpiozero import Button/, 'GPIO dependency should be imported only inside runtime function');
+assert.match(source, /pull_up=True/, 'button should use Raspberry Pi internal pull-up resistor');
+assert.match(source, /button\.when_pressed/, 'GPIO button should call handler on press');

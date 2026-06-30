@@ -119,3 +119,89 @@ def decide_next_action(passenger: dict[str, Any]) -> str:
     if status in ("not_started", "landed", None):
         return "takeoff"
     return "takeoff"
+
+
+class ButtonController:
+    def __init__(self, client: SleepAirlineClient):
+        self.client = client
+        self.busy = False
+        self.last_press_at = 0.0
+        self.passenger: dict[str, Any] | None = None
+
+    def refresh_passenger(self) -> dict[str, Any]:
+        data = self.client.register_passenger()
+        passenger = data.get("passenger")
+        if not isinstance(passenger, dict):
+            raise RuntimeError("Server response did not include passenger data")
+        self.passenger = passenger
+        return passenger
+
+    def handle_button_press(self) -> None:
+        now = time.monotonic()
+        if self.busy:
+            print("Button ignored: request already running")
+            return
+        if now - self.last_press_at < self.client.config.debounce_seconds:
+            print("Button ignored: debounce")
+            return
+
+        self.busy = True
+        self.last_press_at = now
+        try:
+            passenger = self.passenger or self.refresh_passenger()
+            action = decide_next_action(passenger)
+            if action == "land":
+                print("Landing...")
+                data = self.client.land()
+                self.passenger = data.get("flight", passenger) | {"status": "landed"}
+                print("Landed")
+            else:
+                print("Taking off...")
+                data = self.client.takeoff()
+                self.passenger = data.get("flight", passenger) | {"status": "in_flight"}
+                print("Took off")
+        except Exception as exc:
+            print(f"Button action failed: {exc}", file=sys.stderr)
+            try:
+                self.refresh_passenger()
+            except Exception as refresh_exc:
+                print(f"Refresh failed: {refresh_exc}", file=sys.stderr)
+        finally:
+            self.busy = False
+
+
+def run_gpio_loop(config: Config) -> None:
+    try:
+        from gpiozero import Button
+        from signal import pause
+    except ImportError as exc:
+        raise RuntimeError(
+            "gpiozero is required on Raspberry Pi. Install with: sudo apt install python3-gpiozero"
+        ) from exc
+
+    client = SleepAirlineClient(config)
+    controller = ButtonController(client)
+    passenger = controller.refresh_passenger()
+    print(f"Ready: {passenger.get('name', config.passenger_name)} status={passenger.get('status')}")
+
+    button = Button(config.gpio_pin, pull_up=True, bounce_time=config.debounce_seconds)
+    button.when_pressed = controller.handle_button_press
+    print(f"Listening on BCM GPIO {config.gpio_pin}. Press Ctrl+C to exit.")
+    pause()
+
+
+def main() -> int:
+    try:
+        config = load_config()
+        run_gpio_loop(config)
+        return 0
+    except KeyboardInterrupt:
+        print("Stopped")
+        return 0
+    except Exception as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
