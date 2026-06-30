@@ -58,3 +58,64 @@ def load_config() -> Config:
         route_direction=os.environ.get("ROUTE_DIRECTION", "auto").strip() or "auto",
         debounce_seconds=float(os.environ.get("DEBOUNCE_SECONDS", "1.0")),
     )
+
+
+class SleepAirlineClient:
+    def __init__(self, config: Config):
+        self.config = config
+
+    def post_json(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        url = f"{self.config.server_url}{path}"
+        data = json.dumps(payload).encode("utf-8")
+        req = request.Request(
+            url,
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with request.urlopen(req, timeout=120) as response:
+                body = response.read().decode("utf-8")
+        except error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            try:
+                parsed = json.loads(body)
+                message = parsed.get("message") or parsed.get("error") or body
+            except json.JSONDecodeError:
+                message = body
+            raise RuntimeError(f"API error {exc.code}: {message}") from exc
+        except error.URLError as exc:
+            raise RuntimeError(f"Cannot reach Sleep Airline server: {exc.reason}") from exc
+
+        return json.loads(body) if body else {}
+
+    def register_passenger(self) -> dict[str, Any]:
+        return self.post_json("/api/passenger", {
+            "passengerId": self.config.passenger_id,
+            "name": self.config.passenger_name,
+            "groupId": self.config.group_id,
+        })
+
+    def takeoff(self) -> dict[str, Any]:
+        return self.post_json("/api/flight/takeoff", {
+            "passengerId": self.config.passenger_id,
+            "name": self.config.passenger_name,
+            "groupId": self.config.group_id,
+            "routeDirection": self.config.route_direction,
+        })
+
+    def land(self) -> dict[str, Any]:
+        return self.post_json("/api/flight/land", {
+            "passengerId": self.config.passenger_id,
+            "name": self.config.passenger_name,
+            "groupId": self.config.group_id,
+        })
+
+
+def decide_next_action(passenger: dict[str, Any]) -> str:
+    status = passenger.get("status")
+    if status == "in_flight":
+        return "land"
+    if status in ("not_started", "landed", None):
+        return "takeoff"
+    return "takeoff"
