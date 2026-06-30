@@ -29,3 +29,13 @@ assert.match(source, /def run_gpio_loop/, 'controller should define GPIO loop');
 assert.match(source, /from gpiozero import Button/, 'GPIO dependency should be imported only inside runtime function');
 assert.match(source, /pull_up=True/, 'button should use Raspberry Pi internal pull-up resistor');
 assert.match(source, /button\.when_pressed/, 'GPIO button should call handler on press');
+
+const readme = readFileSync(
+  new URL('../raspberry-pi/README.md', import.meta.url),
+  'utf8'
+);
+
+assert.match(readme, /GPIO17/, 'README should include example GPIO17 wiring');
+assert.match(readme, /GND/, 'README should mention wiring the button to ground');
+assert.match(readme, /python3 button_controller\.py/, 'README should show how to run the controller');
+assert.match(readme, /systemd/, 'README should include optional systemd startup instructions');
