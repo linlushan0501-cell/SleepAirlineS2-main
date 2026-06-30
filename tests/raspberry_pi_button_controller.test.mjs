@@ -29,6 +29,14 @@ assert.match(source, /def run_gpio_loop/, 'controller should define GPIO loop');
 assert.match(source, /from gpiozero import Button/, 'GPIO dependency should be imported only inside runtime function');
 assert.match(source, /pull_up=True/, 'button should use Raspberry Pi internal pull-up resistor');
 assert.match(source, /button\.when_pressed/, 'GPIO button should call handler on press');
+assert.match(source, /AUDIO_PLAYER/, 'controller should support configurable audio player');
+assert.match(source, /BROADCAST_STYLE/, 'controller should support broadcast style for speech');
+assert.match(source, /def post_audio/, 'client should request speech audio from the server');
+assert.match(source, /\/api\/broadcast\/speech/, 'client should use the existing Vercel speech endpoint');
+assert.match(source, /def play_broadcast_audio/, 'controller should play broadcast audio locally');
+assert.match(source, /mpg123/, 'controller should default to mpg123 for mp3 playback');
+assert.match(source, /takeoffBroadcast/, 'controller should speak the takeoff broadcast');
+assert.match(source, /captainBroadcast/, 'controller should speak the landing broadcast');
 
 const readme = readFileSync(
   new URL('../raspberry-pi/README.md', import.meta.url),
@@ -39,3 +47,5 @@ assert.match(readme, /GPIO17/, 'README should include example GPIO17 wiring');
 assert.match(readme, /GND/, 'README should mention wiring the button to ground');
 assert.match(readme, /python3 button_controller\.py/, 'README should show how to run the controller');
 assert.match(readme, /systemd/, 'README should include optional systemd startup instructions');
+assert.match(readme, /mpg123/, 'README should explain mp3 playback setup');
+assert.match(readme, /\/api\/broadcast\/speech/, 'README should mention the Vercel speech endpoint');

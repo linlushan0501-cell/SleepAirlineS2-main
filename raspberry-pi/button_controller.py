@@ -4,7 +4,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import os
+import subprocess
 import sys
+import tempfile
 import time
 from typing import Any, Callable
 from urllib import error, request
@@ -19,6 +21,9 @@ class Config:
     gpio_pin: int
     route_direction: str = "auto"
     debounce_seconds: float = 1.0
+    broadcast_style: str = "formal_captain"
+    audio_player: str = "mpg123"
+    audio_enabled: bool = True
 
 
 def load_dotenv_file(path: str = ".env") -> None:
@@ -40,6 +45,13 @@ def require_env(name: str) -> str:
     return value
 
 
+def env_bool(name: str, default: bool) -> bool:
+    value = os.environ.get(name, "").strip().lower()
+    if not value:
+        return default
+    return value in ("1", "true", "yes", "on")
+
+
 def load_config() -> Config:
     load_dotenv_file()
     try:
@@ -57,6 +69,9 @@ def load_config() -> Config:
         gpio_pin=gpio_pin,
         route_direction=os.environ.get("ROUTE_DIRECTION", "auto").strip() or "auto",
         debounce_seconds=float(os.environ.get("DEBOUNCE_SECONDS", "1.0")),
+        broadcast_style=os.environ.get("BROADCAST_STYLE", "formal_captain").strip() or "formal_captain",
+        audio_player=os.environ.get("AUDIO_PLAYER", "mpg123").strip() or "mpg123",
+        audio_enabled=env_bool("AUDIO_ENABLED", True),
     )
 
 
@@ -89,6 +104,29 @@ class SleepAirlineClient:
 
         return json.loads(body) if body else {}
 
+    def post_audio(self, path: str, payload: dict[str, Any]) -> bytes:
+        url = f"{self.config.server_url}{path}"
+        data = json.dumps(payload).encode("utf-8")
+        req = request.Request(
+            url,
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with request.urlopen(req, timeout=120) as response:
+                content_type = response.headers.get("Content-Type", "")
+                body = response.read()
+        except error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"Speech API error {exc.code}: {body}") from exc
+        except error.URLError as exc:
+            raise RuntimeError(f"Cannot reach Sleep Airline speech server: {exc.reason}") from exc
+
+        if not body or not content_type.startswith("audio/"):
+            raise RuntimeError("Speech API did not return audio")
+        return body
+
     def register_passenger(self) -> dict[str, Any]:
         return self.post_json("/api/passenger", {
             "passengerId": self.config.passenger_id,
@@ -102,6 +140,7 @@ class SleepAirlineClient:
             "name": self.config.passenger_name,
             "groupId": self.config.group_id,
             "routeDirection": self.config.route_direction,
+            "broadcastStyle": self.config.broadcast_style,
         })
 
     def land(self) -> dict[str, Any]:
@@ -109,6 +148,13 @@ class SleepAirlineClient:
             "passengerId": self.config.passenger_id,
             "name": self.config.passenger_name,
             "groupId": self.config.group_id,
+            "broadcastStyle": self.config.broadcast_style,
+        })
+
+    def speech(self, text: str) -> bytes:
+        return self.post_audio("/api/broadcast/speech", {
+            "text": text,
+            "style": self.config.broadcast_style,
         })
 
 
@@ -136,6 +182,31 @@ class ButtonController:
         self.passenger = passenger
         return passenger
 
+    def play_broadcast_audio(self, text: str) -> None:
+        if not self.client.config.audio_enabled or not text.strip():
+            return
+
+        audio_path = ""
+        try:
+            print("Playing broadcast audio...")
+            audio = self.client.speech(text)
+            with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as file:
+                file.write(audio)
+                audio_path = file.name
+
+            subprocess.run(
+                [self.client.config.audio_player, "-q", audio_path],
+                check=True,
+            )
+        except Exception as exc:
+            print(f"Audio playback failed: {exc}", file=sys.stderr)
+        finally:
+            if audio_path:
+                try:
+                    os.unlink(audio_path)
+                except OSError:
+                    pass
+
     def handle_button_press(self) -> None:
         now = time.monotonic()
         if self.busy:
@@ -154,11 +225,17 @@ class ButtonController:
                 print("Landing...")
                 data = self.client.land()
                 self.passenger = data.get("flight", passenger) | {"status": "landed"}
+                flight = data.get("flight", {})
+                if isinstance(flight, dict):
+                    self.play_broadcast_audio(str(flight.get("captainBroadcast", "")))
                 print("Landed")
             else:
                 print("Taking off...")
                 data = self.client.takeoff()
                 self.passenger = data.get("flight", passenger) | {"status": "in_flight"}
+                flight = data.get("flight", {})
+                if isinstance(flight, dict):
+                    self.play_broadcast_audio(str(flight.get("takeoffBroadcast", "")))
                 print("Took off")
         except Exception as exc:
             print(f"Button action failed: {exc}", file=sys.stderr)
